@@ -11,17 +11,15 @@ const port = 3000;
 app.use(bodyParser.json());
 
 // Pricing factors in Kenyan Shillings (KES)
-const baseFare = 100; // Base fare, e.g., KES 100
-const costPerKilometer = 20; // Cost per km
+const baseFare = 150; // Base fare, e.g., KES 100
+const costPerKilometer = 27; // Cost per km
 const costPerMinute = 5; // Cost per minute
-const driverRatingAdjustment = 0.05; // 5% adjustment based on driver rating
+const driverRatingAdjustment = 0.03; // 3% adjustment based on driver rating
 const carCategoryMultipliers = {
   economy: 1.0,
   premium: 1.5,
   luxury: 2.0,
 };
-
-// The rest of your code remains unchanged...
 
 // Rush Hour Definitions (24-hour format)
 const rushHours = {
@@ -38,7 +36,7 @@ const parseTime = (time) => {
 };
 
 // Function to check if current time is within rush hours
-const isRushHour = (currentTime)=> {
+const isRushHour = (currentTime) => {
   const morningStart = parseTime(rushHours.morning.start);
   const morningEnd = parseTime(rushHours.morning.end);
   const eveningStart = parseTime(rushHours.evening.start);
@@ -50,12 +48,8 @@ const isRushHour = (currentTime)=> {
   );
 };
 
-// Function to fetch traffic data from Google Traffic API
-// Note: Replace the URL and parameters based on the actual Google Traffic API documentation
-const getTrafficMultiplier = async (
-  origin,
-  destination
-)=> {
+// Function to fetch traffic data from Google Maps Directions API
+const getTrafficMultiplier = async (origin, destination) => {
   try {
     const apiKey = process.env.GOOGLE_MAPS_API_KEY;
     const response = await axios.get(
@@ -64,48 +58,41 @@ const getTrafficMultiplier = async (
         params: {
           origin,
           destination,
-          key:apiKey,
-          departure_time: "now",
-          traffic_model: "best_guess",
+          key: apiKey,
+          departure_time: "now", // Real-time traffic data
+          traffic_model: "optimistic",
         },
       }
     );
 
-    // Simplified traffic analysis:
-    // If traffic is heavy, return a higher multiplier
-    // This is a placeholder. Actual implementation depends on API response structure
+    // Check response for traffic information
     const routes = response.data.routes;
     if (routes && routes.length > 0) {
       const legs = routes[0].legs;
       if (legs && legs.length > 0) {
-        const trafficSpeed = legs[0].duration_in_traffic.value; // in seconds
-        const normalSpeed = legs[0].duration.value; // in seconds
-        const delay = trafficSpeed - normalSpeed;
+        const trafficDuration = legs[0].duration_in_traffic.value; // in seconds
+        const normalDuration = legs[0].duration.value; // in seconds
+        const delay = trafficDuration - normalDuration;
+        console.log(delay);
+
+        // Apply a traffic surge multiplier based on delay
         if (delay > 600) {
-          // More than 10 minutes delay
-          return 1.5; // 50% surge
+          // If delay is more than 10 minutes
+          return 1.5; // 50% traffic surge
+        } else if (delay > 300) {
+          // Delay between 5 to 10 minutes
+          return 1.2; // 20% traffic surge
         }
       }
     }
-
-    return 1.0; // No surge
+    return 1.0; // No surge if minimal delay
   } catch (error) {
-    console.error("Error fetching traffic data:", error);
+    console.error("Error fetching traffic data:", error.message);
     return 1.0; // Default to no surge in case of error
   }
 };
 
-// interface PricingRequest {
-//   distance: number; // in km
-//   duration: number; // in minutes
-//   carCategory: "economy" | "premium" | "luxury";
-//   driverRating: number;
-//   origin: string; // Address or coordinates
-//   destination: string; // Address or coordinates
-//   tripTime?: string; // Optional: ISO string or specific format
-//   weatherAdjustment?: number; // e.g., bad weather adds cost
-// }
-
+// Pricing endpoint
 app.post("/calculate-price", async (req, res) => {
   const {
     distance,
@@ -116,7 +103,19 @@ app.post("/calculate-price", async (req, res) => {
     destination,
     tripTime,
     weatherAdjustment = 0,
-  }= req.body;
+  } = req.body;
+
+  // Validate required fields
+  if (
+    !distance ||
+    !duration ||
+    !carCategory ||
+    !driverRating ||
+    !origin ||
+    !destination
+  ) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
 
   // Determine the trip time
   const currentTime = tripTime ? new Date(tripTime) : new Date();
@@ -142,6 +141,7 @@ app.post("/calculate-price", async (req, res) => {
   const trafficMultiplier = await getTrafficMultiplier(origin, destination);
   surgeMultiplier *= trafficMultiplier;
 
+  // Apply the surge multiplier to the trip cost
   tripCost *= surgeMultiplier;
 
   // Apply driver rating adjustment
