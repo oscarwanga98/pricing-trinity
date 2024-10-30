@@ -11,23 +11,32 @@ const port = 3000;
 app.use(bodyParser.json());
 
 // Pricing factors in Kenyan Shillings (KES)
-const baseFare = 150; // Base fare, e.g., KES 100
-const costPerKilometer = 27; // Cost per km
-const costPerMinute = 5; // Cost per minute
-const driverRatingAdjustment = 0.03; // 3% adjustment based on driver rating
+const baseFare = 150;
+const costPerKilometer = 30;
+const costPerMinute = 7;
+const driverRatingAdjustment = 0.05;
 const carCategoryMultipliers = {
   economy: 1.0,
-  premium: 1.5,
-  luxury: 2.0,
+  economyplus: 1.5,
+  motorbike: 0.6,
+  motorbikeelectric: 0.4,
+  xl: 2.0,
 };
 
-// Rush Hour Definitions (24-hour format)
+// Car categories
+let carCategories = [
+  { id: 1, name: "Economy", maxPassengers: 3, engineCapacity: 650 },
+  { id: 2, name: "Economy Plus", maxPassengers: 4, engineCapacity: 1000 },
+  { id: 3, name: "Motor Bike", maxPassengers: 1, engineCapacity: 150 },
+  { id: 4, name: "Motor Bike Electric", maxPassengers: 1, engineCapacity: 100 },
+  { id: 5, name: "XL", maxPassengers: 7, engineCapacity: 1500 },
+];
+
 const rushHours = {
-  morning: { start: "07:00", end: "09:00" }, // 7 AM to 9 AM
-  evening: { start: "17:00", end: "19:00" }, // 5 PM to 7 PM
+  morning: { start: "07:00", end: "09:00" },
+  evening: { start: "17:00", end: "19:00" },
 };
 
-// Function to parse time strings
 const parseTime = (time) => {
   const [hours, minutes] = time.split(":").map(Number);
   const now = new Date();
@@ -35,7 +44,6 @@ const parseTime = (time) => {
   return now;
 };
 
-// Function to check if current time is within rush hours
 const isRushHour = (currentTime) => {
   const morningStart = parseTime(rushHours.morning.start);
   const morningEnd = parseTime(rushHours.morning.end);
@@ -48,7 +56,7 @@ const isRushHour = (currentTime) => {
   );
 };
 
-// Function to fetch traffic data from Google Maps Directions API
+// Fetch traffic data for surge multiplier
 const getTrafficMultiplier = async (origin, destination) => {
   try {
     const apiKey = process.env.GOOGLE_MAPS_API_KEY;
@@ -59,111 +67,117 @@ const getTrafficMultiplier = async (origin, destination) => {
           origin,
           destination,
           key: apiKey,
-          departure_time: "now", // Real-time traffic data
-          traffic_model: "optimistic",
+          departure_time: "now",
+          traffic_model: "best_guess",
         },
       }
     );
 
-    // Check response for traffic information
     const routes = response.data.routes;
     if (routes && routes.length > 0) {
       const legs = routes[0].legs;
       if (legs && legs.length > 0) {
-        const trafficDuration = legs[0].duration_in_traffic.value; // in seconds
-        const normalDuration = legs[0].duration.value; // in seconds
-        const delay = trafficDuration - normalDuration;
-        console.log(delay);
-
-        // Apply a traffic surge multiplier based on delay
-        if (delay > 600) {
-          // If delay is more than 10 minutes
-          return 1.5; // 50% traffic surge
-        } else if (delay > 300) {
-          // Delay between 5 to 10 minutes
-          return 1.2; // 20% traffic surge
+        const trafficSpeed = legs[0].duration_in_traffic.value;
+        const normalSpeed = legs[0].duration.value;
+        const delay = trafficSpeed - normalSpeed;
+        if (delay > 400) {
+          return 1.5;
         }
       }
     }
-    return 1.0; // No surge if minimal delay
+    return 1.0;
   } catch (error) {
-    console.error("Error fetching traffic data:", error.message);
-    return 1.0; // Default to no surge in case of error
+    console.error("Error fetching traffic data:", error);
+    return 1.0;
   }
 };
 
-// Pricing endpoint
-app.post("/calculate-price", async (req, res) => {
+// Fetch weather-based adjustment
+const getWeatherAdjustment = async (latitude, longitude) => {
+  try {
+    const weatherApiKey = process.env.OPENWEATHER_API_KEY;
+    const weatherUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${latitude}&lon=${longitude}&appid=${weatherApiKey}`;
+    const weatherResponse = await axios.get(weatherUrl);
+    const weatherCondition = weatherResponse.data.weather[0].main.toLowerCase();
+    console.log(weatherCondition);
+
+    switch (weatherCondition) {
+      case "thunderstorm":
+        return 200;
+      case "rain":
+        return 170;
+      case "drizzle":
+        return 130;
+      case "fog":
+      case "mist":
+        return 90;
+      default:
+        return 0;
+    }
+  } catch (error) {
+    console.error("Error fetching weather data:", error);
+    return 0;
+  }
+};
+
+// Calculate and return prices for all categories
+app.post("/calculate-prices", async (req, res) => {
   const {
     distance,
     duration,
-    carCategory,
     driverRating,
     origin,
     destination,
     tripTime,
-    weatherAdjustment = 0,
+    latitude,
+    longitude,
   } = req.body;
 
-  // Validate required fields
-  if (
-    !distance ||
-    !duration ||
-    !carCategory ||
-    !driverRating ||
-    !origin ||
-    !destination
-  ) {
-    return res.status(400).json({ error: "Missing required fields" });
-  }
-
-  // Determine the trip time
   const currentTime = tripTime ? new Date(tripTime) : new Date();
-
-  // Calculate base trip cost
   const distanceCost = distance * costPerKilometer;
   const timeCost = duration * costPerMinute;
   const baseCost = baseFare + distanceCost + timeCost;
 
-  // Apply car category multiplier
-  const carCategoryMultiplier = carCategoryMultipliers[carCategory] || 1.0;
-  let tripCost = baseCost * carCategoryMultiplier;
-
-  // Determine Surge Multiplier
   let surgeMultiplier = 1.0;
-
-  // Check if current time is rush hour
   if (isRushHour(currentTime)) {
-    surgeMultiplier += 0.5; // 50% surge during rush hours
+    surgeMultiplier += 0.5;
   }
 
-  // Fetch traffic-based surge multiplier
   const trafficMultiplier = await getTrafficMultiplier(origin, destination);
   surgeMultiplier *= trafficMultiplier;
 
-  // Apply the surge multiplier to the trip cost
-  tripCost *= surgeMultiplier;
+  const weatherAdjustment = await getWeatherAdjustment(latitude, longitude);
 
-  // Apply driver rating adjustment
-  if (driverRating >= 4.5) {
-    tripCost -= tripCost * driverRatingAdjustment; // Discount for top-rated drivers
-  } else if (driverRating < 3.0) {
-    tripCost += tripCost * driverRatingAdjustment; // Increase cost for low-rated drivers
-  }
+  const prices = carCategories.map((category) => {
+    const carCategoryMultiplier =
+      carCategoryMultipliers[category.name.toLowerCase().replace(" ", "")] ||
+      1.0;
+    let tripCost = baseCost * carCategoryMultiplier;
+    tripCost *= surgeMultiplier;
 
-  // Apply weather/traffic adjustment (if applicable)
-  tripCost += weatherAdjustment;
+    if (driverRating >= 4.5) {
+      tripCost -= tripCost * driverRatingAdjustment;
+    } else if (driverRating < 3.0) {
+      tripCost += tripCost * driverRatingAdjustment;
+    }
 
-  // Return the calculated trip cost
+    tripCost += weatherAdjustment;
+       return {
+      category: category.name,
+      maxPassengers: category.maxPassengers,
+      engineCapacity: category.engineCapacity,
+      price: tripCost.toFixed(2),
+    };
+  });
+
   res.json({
     baseFare,
     distanceCost,
     timeCost,
-    carCategoryMultiplier,
     surgeMultiplier: surgeMultiplier.toFixed(2),
-    driverRatingAdjustment: driverRatingAdjustment * 100 + "%",
     weatherAdjustment,
-    total: tripCost.toFixed(2),
+    driverRatingAdjustment: driverRatingAdjustment * 100 + "%",
+    prices,
   });
 });
 
