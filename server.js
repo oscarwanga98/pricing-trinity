@@ -95,9 +95,11 @@ const getTrafficMultiplier = async (origin, destination) => {
 // Fetch weather-based adjustment
 const getWeatherAdjustment = async (latitude, longitude) => {
   try {
+
     const weatherApiKey = process.env.OPENWEATHER_API_KEY;
     const weatherUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${latitude}&lon=${longitude}&appid=${weatherApiKey}`;
     const weatherResponse = await axios.get(weatherUrl);
+    
     const weatherCondition = weatherResponse.data.weather[0].main.toLowerCase();
     console.log(weatherCondition);
 
